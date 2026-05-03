@@ -66,7 +66,7 @@ pod_check "redis" infra "app=redis"
 pod_check "kafka" infra "app=kafka"
 pod_check "debezium-server-ecom" infra "app=debezium-server-ecom"
 pod_check "debezium-server-inventory" infra "app=debezium-server-inventory"
-pod_check "pgadmin" infra "app=pgadmin"
+pod_check "pgadmin" admin-tools "app=pgadmin"
 pod_check "superset" analytics "app=superset"
 pod_check "ui-service" ecom "app=ui-service"
 

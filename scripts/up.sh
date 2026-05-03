@@ -49,7 +49,7 @@ confirm() {
 }
 
 wait_deploy() {
-  local name=$1 ns=$2 timeout=${3:-300s}
+  local name=$1 ns=$2 timeout=${3:-600s}
   kubectl rollout status deployment/"$name" -n "$ns" --timeout="$timeout" || {
     warn "Deployment '$name' in '$ns' did not roll out within $timeout — continuing anyway"
     return 0
@@ -199,10 +199,10 @@ bootstrap_fresh() {
   kubectl apply -f "${REPO_ROOT}/infra/cnpg/keycloak-db-cluster.yaml"
   kubectl apply -f "${REPO_ROOT}/infra/cnpg/peer-auth.yaml"
   info "Waiting for all CNPG clusters to be ready..."
-  kubectl wait --for=condition=Ready cluster/ecom-db -n ecom --timeout=300s & _P1=$!
-  kubectl wait --for=condition=Ready cluster/inventory-db -n inventory --timeout=300s & _P2=$!
-  kubectl wait --for=condition=Ready cluster/analytics-db -n analytics --timeout=300s & _P3=$!
-  kubectl wait --for=condition=Ready cluster/keycloak-db -n identity --timeout=300s & _P4=$!
+  kubectl wait --for=condition=Ready cluster/ecom-db -n ecom --timeout=600s & _P1=$!
+  kubectl wait --for=condition=Ready cluster/inventory-db -n inventory --timeout=600s & _P2=$!
+  kubectl wait --for=condition=Ready cluster/analytics-db -n analytics --timeout=600s & _P3=$!
+  kubectl wait --for=condition=Ready cluster/keycloak-db -n identity --timeout=600s & _P4=$!
   wait $_P1 $_P2 $_P3 $_P4
 
   # ── 4. Analytics DDL (before Flink — JDBC sink requires tables to pre-exist) ─
@@ -230,14 +230,14 @@ bootstrap_fresh() {
   kubectl apply -f "${REPO_ROOT}/infra/kafka/zookeeper.yaml" 2>/dev/null || true  # intentionally empty placeholder
   kubectl apply -f "${REPO_ROOT}/infra/kafka/kafka.yaml"
   info "Waiting for Redis + Kafka in parallel..."
-  kubectl rollout status deployment/redis -n infra --timeout=300s & _P1=$!
-  kubectl rollout status deployment/kafka -n infra --timeout=300s & _P2=$!
+  kubectl rollout status deployment/redis -n infra --timeout=600s & _P1=$!
+  kubectl rollout status deployment/kafka -n infra --timeout=600s & _P2=$!
   wait $_P1 $_P2
   # Apply topic-init Job separately (never re-apply kafka.yaml here — that would
   # reconfigure the Deployment and could restart Kafka mid-job).
   kubectl delete job kafka-topic-init -n infra --ignore-not-found
   kubectl apply -f "${REPO_ROOT}/infra/kafka/kafka-topics-init.yaml"
-  kubectl wait --for=condition=complete job/kafka-topic-init -n infra --timeout=300s
+  kubectl wait --for=condition=complete job/kafka-topic-init -n infra --timeout=600s
 
   # ── 5b. Kafka Exporter (Prometheus metrics for consumer lag) ────────────────
   info "Deploying Kafka Exporter..."
@@ -322,8 +322,8 @@ bootstrap_fresh() {
   kubectl apply -f "${REPO_ROOT}/infra/flink/flink-config.yaml"
   kubectl apply -f "${REPO_ROOT}/infra/flink/flink-cluster.yaml"
   info "Waiting for Flink JobManager + TaskManager in parallel..."
-  kubectl rollout status deployment/flink-jobmanager  -n analytics --timeout=300s & _P1=$!
-  kubectl rollout status deployment/flink-taskmanager -n analytics --timeout=300s & _P2=$!
+  kubectl rollout status deployment/flink-jobmanager  -n analytics --timeout=600s & _P1=$!
+  kubectl rollout status deployment/flink-taskmanager -n analytics --timeout=600s & _P2=$!
   wait $_P1 $_P2
   kubectl delete job flink-sql-runner -n analytics --ignore-not-found
   kubectl apply -f "${REPO_ROOT}/infra/flink/flink-sql-runner.yaml"
@@ -372,9 +372,9 @@ bootstrap_fresh() {
   [[ -d "${REPO_ROOT}/inventory-service/k8s/" ]] && kubectl apply -f "${REPO_ROOT}/inventory-service/k8s/"
   [[ -d "${REPO_ROOT}/ui/k8s/" ]]                && kubectl apply -f "${REPO_ROOT}/ui/k8s/"
   info "Waiting for app services in parallel..."
-  kubectl rollout status deployment/ecom-service      -n ecom      --timeout=300s & _P1=$!
-  kubectl rollout status deployment/inventory-service -n inventory --timeout=300s & _P2=$!
-  kubectl rollout status deployment/ui-service        -n ecom      --timeout=300s & _P3=$!
+  kubectl rollout status deployment/ecom-service      -n ecom      --timeout=600s & _P1=$!
+  kubectl rollout status deployment/inventory-service -n inventory --timeout=600s & _P2=$!
+  kubectl rollout status deployment/ui-service        -n ecom      --timeout=600s & _P3=$!
   wait $_P1 $_P2 $_P3 || warn "One or more app service rollouts timed out — check pod logs"
 
   # ── 10b. Deploy CSRF service (gateway-level CSRF protection) ────────────────
@@ -387,22 +387,27 @@ bootstrap_fresh() {
   if ! echo "$_MESH_CFG" | grep -q "csrf-ext-authz"; then
     info "Registering csrf-ext-authz extensionProvider in Istio mesh config..."
     kubectl get configmap istio -n istio-system -o json | python3 -c "
-import sys, json, yaml
+import sys, json
 cm = json.load(sys.stdin)
-mesh = yaml.safe_load(cm['data']['mesh'])
-if 'extensionProviders' not in mesh:
-    mesh['extensionProviders'] = []
-mesh['extensionProviders'].append({
-    'name': 'csrf-ext-authz',
-    'envoyExtAuthzHttp': {
-        'service': 'csrf-service.infra.svc.cluster.local',
-        'port': 8080,
-        'failOpen': True,
-        'headersToUpstreamOnAllow': [],
-        'includeRequestHeadersInCheck': ['authorization', 'x-csrf-token', 'origin', 'referer'],
-    }
-})
-cm['data']['mesh'] = yaml.dump(mesh, default_flow_style=False)
+mesh = cm['data']['mesh']
+new_entry = (
+    '- name: csrf-ext-authz\n'
+    '  envoyExtAuthzHttp:\n'
+    '    service: csrf-service.infra.svc.cluster.local\n'
+    '    port: 8080\n'
+    '    failOpen: true\n'
+    '    headersToUpstreamOnAllow: []\n'
+    '    includeRequestHeadersInCheck:\n'
+    '    - authorization\n'
+    '    - x-csrf-token\n'
+    '    - origin\n'
+    '    - referer\n'
+)
+if 'extensionProviders:' in mesh:
+    mesh = mesh.replace('extensionProviders:\n', 'extensionProviders:\n' + new_entry, 1)
+else:
+    mesh = mesh.rstrip('\n') + '\nextensionProviders:\n' + new_entry
+cm['data']['mesh'] = mesh
 json.dump(cm, sys.stdout)
 " | kubectl apply -f -
   fi
@@ -528,7 +533,7 @@ json.dump(pol, sys.stdout)
   if [[ -f "${REPO_ROOT}/infra/superset/bootstrap-job.yaml" ]]; then
     kubectl delete job superset-bootstrap -n analytics --ignore-not-found
     kubectl apply -f "${REPO_ROOT}/infra/superset/bootstrap-job.yaml"
-    kubectl wait --for=condition=complete job/superset-bootstrap -n analytics --timeout=300s || \
+    kubectl wait --for=condition=complete job/superset-bootstrap -n analytics --timeout=600s || \
       warn "superset-bootstrap did not complete — dashboards may need manual setup"
   fi
 
@@ -557,7 +562,7 @@ json.dump(pol, sys.stdout)
   kubectl apply -f "${REPO_ROOT}/infra/observability/kiali/kiali-config-patch.yaml"
   kubectl apply -f "${REPO_ROOT}/infra/observability/kiali/kiali-nodeport.yaml"
   kubectl rollout restart deployment/kiali -n istio-system
-  kubectl rollout status deployment/kiali -n istio-system --timeout=120s
+  kubectl rollout status deployment/kiali -n istio-system --timeout=300s
 
   # ── 13b. Grafana + AlertManager + kube-state-metrics + OTel stack ────────────
   section "Deploying Grafana, AlertManager, kube-state-metrics"
@@ -589,7 +594,7 @@ json.dump(pol, sys.stdout)
 
   # ── 15. Verify Flink SQL runner completed ─────────────────────────────────────
   section "Verifying Flink SQL runner"
-  kubectl wait --for=condition=complete job/flink-sql-runner -n analytics --timeout=120s || \
+  kubectl wait --for=condition=complete job/flink-sql-runner -n analytics --timeout=300s || \
     warn "flink-sql-runner not yet complete — check: kubectl logs -n analytics -l job-name=flink-sql-runner"
 
   # ── 16. Extract CA certificate for browser trust ──────────────────────────────
@@ -638,10 +643,10 @@ recovery() {
   kubectl delete pod -n identity -l cnpg.io/cluster=keycloak-db --wait=false 2>/dev/null || true
   kubectl delete pod -n analytics -l cnpg.io/cluster=analytics-db --wait=false 2>/dev/null || true
   info "Waiting for CNPG clusters to recover..."
-  kubectl wait --for=condition=Ready cluster/ecom-db -n ecom --timeout=300s || true
-  kubectl wait --for=condition=Ready cluster/inventory-db -n inventory --timeout=300s || true
-  kubectl wait --for=condition=Ready cluster/keycloak-db -n identity --timeout=300s || true
-  kubectl wait --for=condition=Ready cluster/analytics-db -n analytics --timeout=300s || true
+  kubectl wait --for=condition=Ready cluster/ecom-db -n ecom --timeout=600s || true
+  kubectl wait --for=condition=Ready cluster/inventory-db -n inventory --timeout=600s || true
+  kubectl wait --for=condition=Ready cluster/keycloak-db -n identity --timeout=600s || true
+  kubectl wait --for=condition=Ready cluster/analytics-db -n analytics --timeout=600s || true
 
   section "Restarting application pods"
   kubectl rollout restart deploy/kafka -n infra
@@ -709,7 +714,7 @@ recovery() {
   if [[ $_gw_i -lt 24 ]]; then
     kubectl delete job flink-sql-runner -n analytics --ignore-not-found
     kubectl apply -f "${REPO_ROOT}/infra/flink/flink-sql-runner.yaml"
-    kubectl wait --for=condition=complete job/flink-sql-runner -n analytics --timeout=120s || \
+    kubectl wait --for=condition=complete job/flink-sql-runner -n analytics --timeout=300s || \
       warn "flink-sql-runner did not complete — check: kubectl logs -n analytics -l job-name=flink-sql-runner"
     info "Flink SQL pipeline resubmitted."
   fi

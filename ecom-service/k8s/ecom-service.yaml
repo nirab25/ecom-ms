@@ -121,7 +121,7 @@ spec:
               path: /ecom/actuator/health/liveness
               port: 8080
             periodSeconds: 5
-            failureThreshold: 30
+            failureThreshold: 60
           readinessProbe:
             httpGet:
               path: /ecom/actuator/health/readiness

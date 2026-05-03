@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(kind get *)",
+      "Bash(kubectl config *)",
+      "Bash(kubectl get *)",
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(kind version *)",
+      "Bash(docker info *)",
+      "Read(//var/run/**)",
+      "Bash(echo \"exit:$?\")",
+      "Bash(timeout 5 docker ps --format \"{{.Names}}\")",
+      "Bash(kubectl describe *)",
+      "Bash(python3 -m json.tool)",
+      "Bash(kubectl logs *)"
+    ]
+  }
+}

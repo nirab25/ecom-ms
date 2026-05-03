@@ -14,7 +14,7 @@ kubectl apply --server-side \
 
 info "Waiting for CNPG controller manager to be ready..."
 kubectl wait --for=condition=Available deployment/cnpg-controller-manager \
-  -n cnpg-system --timeout=120s
+  -n cnpg-system --timeout=300s
 
 # NOTE: cnpg-system is NOT enrolled in Istio Ambient mesh.
 # CNPG manages its own TLS for streaming replication and the operator's webhook
